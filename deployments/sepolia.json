@@ -1,10 +1,10 @@
 {
  "network": "sepolia",
  "chainId": "11155111",
- "revision": 5,
- "deployer": "0x65ab82feC38c3A5F2A5b0bd96cB3255E7A45ae42",
- "deployedAt": "2026-10-11",
- "note": "Revision 5 (third review round, \"Result Domain\"): a scheme now commits its resultKind (ORDERED_LEVEL / CATEGORICAL / OPAQUE) and a uint256 levelMask (bit n = level n is a declared result) as immutable semantics; attest/attestWithProof refuse undeclared levels, check reverts on minLevel == 0 and on non-ordered schemes, policy rules and bridge configuration are restricted to ordered schemes with a responseMap covering the whole mask. registerScheme takes a SchemeInput struct; IKYASchemeRegistry/IKYARegistry have new interface ids (0xe6dbd933 / 0x5d1bec61). Groth16Verifier and the adapter are unchanged since revision 4 and are reused (creation bytecode verified identical). Nonce 84 was an aborted deploy (gas schedule on Sepolia had increased ~7x since revision 4; the tx ran out of gas and created nothing usable). Deployed from a sandbox-held throwaway key; txs signed offline against browser-built digests and broadcast via public JSON-RPC.",
+ "revision": 6,
+ "deployer": "0x0690119CF9C484cf1700122e6b2075Ba6b7A1492",
+ "deployedAt": "2026-10-22",
+ "note": "Revision 6 (fourth review round, \"Response Map\"): KYABridge8004.configureScheme now refuses a responseMap whose first entry is non-zero or that is not non-decreasing (BadResponseMap); no interface change. Only the bridge is redeployed; KYASchemeRegistry, KYARegistry, KYAPolicyRegistry and ValidationRegistry8004 are the revision-5 instances and Groth16Verifier/adapter the revision-4 instances. KEY NOTE: the private key of the revision 1-5 deployer 0x65ab82feC38c3A5F2A5b0bd96cB3255E7A45ae42 was lost with the sandbox that held it (2026-10-16); the revision-5 bridge 0xdc39aaE1319EC81AF64F72B36A7F8Aa42520B850, the controller role of the two example schemes and demo agent 10387 can no longer be operated. The revision-6 bridge is owned by a new session-held key (this deployer) and the bridge example uses a freshly registered demo agent. Deployed from a sandbox-held throwaway key; txs signed offline against browser-built digests and broadcast via public JSON-RPC.",
  "erc8004": {
   "identityRegistry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
   "reputationRegistry": "0x8004B663056A597Dffe9eCcC1965A193B7388713",
@@ -17,7 +17,9 @@
    "block": 11886801,
    "gasUsed": 6739805,
    "nonce": 85,
-   "args": []
+   "args": [],
+   "deployer": "0x65ab82feC38c3A5F2A5b0bd96cB3255E7A45ae42",
+   "reusedFromRevision": 5
   },
   "KYARegistry": {
    "address": "0xE06FBA26561E7A385B32514f6657De68723d5cF1",
@@ -27,7 +29,9 @@
    "nonce": 86,
    "args": [
     "0x8Dd5ec713E21a726FB864f6541F9AAA59aEC0cc0"
-   ]
+   ],
+   "deployer": "0x65ab82feC38c3A5F2A5b0bd96cB3255E7A45ae42",
+   "reusedFromRevision": 5
   },
   "KYAPolicyRegistry": {
    "address": "0x7767966702bf12C31CDD600807B77443998f0F21",
@@ -37,7 +41,9 @@
    "nonce": 87,
    "args": [
     "0xE06FBA26561E7A385B32514f6657De68723d5cF1"
-   ]
+   ],
+   "deployer": "0x65ab82feC38c3A5F2A5b0bd96cB3255E7A45ae42",
+   "reusedFromRevision": 5
   },
   "ValidationRegistry8004": {
    "address": "0x91103a508b0525B0b16146Ad5C0a7c719148b14c",
@@ -47,18 +53,21 @@
    "nonce": 88,
    "args": [
     "0x8004A818BFB912233c491871b3d84c89A494BD9e"
-   ]
+   ],
+   "deployer": "0x65ab82feC38c3A5F2A5b0bd96cB3255E7A45ae42",
+   "reusedFromRevision": 5
   },
   "KYABridge8004": {
-   "address": "0xdc39aaE1319EC81AF64F72B36A7F8Aa42520B850",
-   "tx": "0xa3cf8ff293d9daae7344c8295ab6c761bd23527efd3110bbe612e8de628151a2",
-   "block": 11886851,
-   "gasUsed": 9338710,
-   "nonce": 89,
+   "address": "0x2E70783ec4A0aB5b0A109908151403Ce03FC11Ec",
+   "tx": "0x501cee301b3ce2ee4ab9db219dc46492d980e4362896a4fb8d95b844d62c7b6a",
+   "block": 11966154,
+   "gasUsed": 9689733,
+   "nonce": 0,
+   "deployer": "0x0690119CF9C484cf1700122e6b2075Ba6b7A1492",
    "args": [
     "0xE06FBA26561E7A385B32514f6657De68723d5cF1",
     "0x91103a508b0525B0b16146Ad5C0a7c719148b14c",
-    "0x65ab82feC38c3A5F2A5b0bd96cB3255E7A45ae42"
+    "0x0690119CF9C484cf1700122e6b2075Ba6b7A1492"
    ]
   },
   "Groth16Verifier": {
@@ -106,6 +115,11 @@
  },
  "superseded": [
   {
+   "revision": 5,
+   "file": "deployments/sepolia-r5.json",
+   "note": "bridge accepted a responseMap with a non-zero first entry or a non-monotone ladder (SHOULD only); four of its contracts are reused by revision 6"
+  },
+  {
    "revision": 4,
    "file": "deployments/sepolia-r4.json",
    "note": "result kind and valid-level set not committed on-chain; attest accepted any uint8 level; check(minLevel 0) passed on a level-0 assertion"
@@ -131,12 +145,16 @@
    "note": "circuit rev 1 — do not rely on"
   }
  ],
- "abortedTx": {
-  "nonce": 84,
-  "tx": "0x0d8553d1855b568f6d16559bbb54a108dc452946760f1e9b82110f5193793375",
-  "status": "out of gas (gasLimit 1200000, pre-fork estimate)",
-  "address": "0xb28973b39fac83bd0e77ed40d798dee297dd9e4c",
-  "note": "no code deployed; not part of the stack"
+ "admissionDomain": "0x779cd7d5bcfb823bf23f307128d1e7cfb9ca2bdf670660315167c74a328d4fc6",
+ "previousBridge": {
+  "address": "0xdc39aaE1319EC81AF64F72B36A7F8Aa42520B850",
+  "revision": 5,
+  "status": "owner key lost; its records in ValidationRegistry8004 remain but are not part of the current query path",
+  "file": "deployments/sepolia-r5.json"
  },
- "admissionDomain": "0x779cd7d5bcfb823bf23f307128d1e7cfb9ca2bdf670660315167c74a328d4fc6"
+ "ownership": {
+  "bridgeOwner": "0x0690119CF9C484cf1700122e6b2075Ba6b7A1492",
+  "schemeControllers": "0x65ab82feC38c3A5F2A5b0bd96cB3255E7A45ae42 (key lost; the controller role of the two example schemes is unrecoverable)",
+  "status": "bridge owner is a session-held throwaway key; transfer pending a maintainer address"
+ }
 }

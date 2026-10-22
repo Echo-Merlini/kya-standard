@@ -601,5 +601,44 @@ async function test(name, fn) {
     await expectRevert(schemes.send("registerScheme", [SI("ipfs://x", ethers.id("x5"), 0, 0, ethers.ZeroAddress, ethers.ZeroHash, 3, 1n)]), "KYA_InvalidResultKind");
   });
 
+  await test("R8 bridge response map (reviewer it44): responseMap[0] MUST be 0 and the map MUST be non-decreasing; never-synced, qualifying level-0 and no-qualifying-assertion are distinguishable via the ERC-8004 record and responseHash", async () => {
+    // (a) configuration: a map that scores "no assertion" is refused, as is a map where a higher level scores lower
+    const { result: s03 } = await schemes.send("registerScheme", [SI("ipfs://s03", ethers.id("s03"), 0, 0, ethers.ZeroAddress, ethers.ZeroHash, 0, 0b1111n)], "issuerA");
+    await expectRevert(bridge.send("configureScheme", [s03, [A("issuerA")], [25, 25, 60, 100]]), "BadResponseMap");  // responseMap[0] != 0
+    await expectRevert(bridge.send("configureScheme", [s03, [A("issuerA")], [0, 60, 25, 100]]), "BadResponseMap");   // not non-decreasing
+    await expectRevert(bridge.send("configureScheme", [s03, [A("issuerA")], [0, 25, 25, 101]]), "BadResponseMap");   // > 100 still refused
+    await bridge.send("configureScheme", [s03, [A("issuerA")], [0, 25, 25, 100]]);                                     // equal steps are allowed
+    const cfg = ethers.keccak256(coder.encode(["bytes32", "address[]", "uint8[]"], [s03, [A("issuerA")], [0, 25, 25, 100]]));
+    assert.equal((await bridge.call("getSchemeConfig", [s03]))[2], cfg);
+
+    // (b) three observable states on the ERC-8004 side
+    const { result: id8 } = await identity.send("register", ["ipfs://agent8.json"], "agentOwner");
+    const s8 = subject8004(chainId, identity.addr, id8);
+    const rh = await bridge.call("requestHashFor", [id8, s03]);
+    // never synced: no request, no response at all
+    await expectRevert(bridge.send("sync", [id8, s03], "stranger"), "RequestNotFound");
+    await validation.send("validationRequest", [bridge.addr, id8, "ipfs://kya-request.json", rh], "agentOwner");
+    let st = await validation.call("getValidationStatus", [rh]);
+    assert.equal(st[3], ethers.ZeroHash);                                   // request filed, not yet synced: no responseHash
+    // synced with NO qualifying assertion: response 0, responseHash commits to assertionId 0x0
+    let { result: resp } = await bridge.send("sync", [id8, s03], "stranger");
+    assert.equal(Number(resp), 0);
+    st = await validation.call("getValidationStatus", [rh]);
+    assert.equal(st[3], ethers.keccak256(coder.encode(["bytes32", "uint8", "bytes32"], [ethers.ZeroHash, 0, cfg])));
+    // synced with a QUALIFYING level-0 assertion: still response 0, but responseHash commits to that assertion's id
+    const { result: aid0 } = await kya.send("attest", [s8, s03, 0, ethers.ZeroHash, 0, "", ethers.ZeroHash], "issuerA");
+    ({ result: resp } = await bridge.send("sync", [id8, s03], "stranger"));
+    assert.equal(Number(resp), 0);
+    st = await validation.call("getValidationStatus", [rh]);
+    assert.equal(st[3], ethers.keccak256(coder.encode(["bytes32", "uint8", "bytes32"], [aid0, 0, cfg])));
+    assert.notEqual(st[3], ethers.keccak256(coder.encode(["bytes32", "uint8", "bytes32"], [ethers.ZeroHash, 0, cfg])));
+    // revoked: back to the "no qualifying assertion" commitment — revocation is not a distinct mirrored state
+    await kya.send("revoke", [aid0, 1], "issuerA");
+    ({ result: resp } = await bridge.send("sync", [id8, s03], "stranger"));
+    assert.equal(Number(resp), 0);
+    st = await validation.call("getValidationStatus", [rh]);
+    assert.equal(st[3], ethers.keccak256(coder.encode(["bytes32", "uint8", "bytes32"], [ethers.ZeroHash, 0, cfg])));
+  });
+
   console.log(`\n${passed} passed${process.exitCode ? " — FAILURES ABOVE" : ""}\n`);
 })().catch((e) => { console.error(e); process.exit(1); });
