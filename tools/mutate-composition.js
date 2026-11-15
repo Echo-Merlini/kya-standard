@@ -1,4 +1,4 @@
-// Mutation harness for the ERC-8294 composition vectors.
+// Mutation harness for the ERC-8294 composition vectors (companion tooling; not part of the ERC assets).
 //
 // A passing case proves nothing on its own: it has to be the thing that fails when the
 // behaviour it names is broken. This applies one single-site mutation at a time to the
@@ -14,7 +14,7 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
-const ADAPTER = path.join(ROOT, "assets/erc-kya/contracts/companions/ValidationNetwork8294Adapter.sol");
+const ADAPTER = path.join(ROOT, "assets/erc-kya/contracts/adapters/ValidationNetwork8294Adapter.sol");
 const ORIGINAL = fs.readFileSync(ADAPTER, "utf8");
 
 const MUTANTS = [
@@ -74,6 +74,13 @@ const MUTANTS = [
     to: `        // MUTANT M7: chain/registry pin deleted`,
   },
   {
+    id: "M8",
+    what: "ladder comparison off by one (a response equal to a threshold no longer earns the level)",
+    expect: "C7",
+    from: `            if (response >= _thresholds[i]) level = uint8(i + 1);`,
+    to: `            if (response > _thresholds[i]) level = uint8(i + 1); // MUTANT M8`,
+  },
+  {
     id: "M9",
     what: "quorum floor off by one (count == required is rejected)",
     expect: "C8",
@@ -81,11 +88,27 @@ const MUTANTS = [
     to: `        if (count <= requiredValidators) revert QuorumNotMet(requestHash, count, requiredValidators);`,
   },
   {
-    id: "M8",
-    what: "level thresholds shifted by one (90 no longer the top boundary)",
-    expect: "C7",
-    from: `        if (response >= 90) return 3;`,
-    to: `        if (response >= 91) return 3; // MUTANT M8`,
+    id: "M10",
+    what: "ladder/mask check deleted (an adapter can carry a ladder the scheme never declared)",
+    expect: "C9",
+    from: `        if (n == 0 || n > 255 || levelMask != (uint256(1) << (n + 1)) - 1) {
+            revert LadderMismatch(schemeId_, levelMask, n);
+        }`,
+    to: `        // MUTANT M10: ladder/mask check deleted`,
+  },
+  {
+    id: "M11",
+    what: "ordered-kind check deleted (a categorical scheme can be mapped onto)",
+    expect: "C9",
+    from: `        if (kind != ORDERED_LEVEL) revert SchemeNotOrdered(schemeId_, kind);`,
+    to: `        // MUTANT M11: ordered-kind check deleted`,
+  },
+  {
+    id: "M12",
+    what: "ladder monotonicity check deleted (a non-increasing ladder is accepted)",
+    expect: "C9",
+    from: `            if (thresholds_[i] > 100 || (i > 0 && thresholds_[i] <= thresholds_[i - 1])) {`,
+    to: `            if (false) { // MUTANT M12`,
   },
 ];
 
@@ -101,7 +124,7 @@ function run() {
   } catch (e) {
     out = String(e.stdout || "");
   }
-  const failed = [...out.matchAll(/✗ (C\d|R)\b/g)].map((m) => m[1]);
+  const failed = [...out.matchAll(/✗ (C\d+|R)\b/g)].map((m) => m[1]);
   return { compiled: true, failed, out };
 }
 
@@ -123,8 +146,8 @@ function run() {
       continue;
     }
     fs.writeFileSync(ADAPTER, ORIGINAL.replace(m.from, m.to));
-    const r = run();
-    fs.writeFileSync(ADAPTER, ORIGINAL);
+    let r;
+    try { r = run(); } finally { fs.writeFileSync(ADAPTER, ORIGINAL); }
 
     let verdict;
     if (!r.compiled) verdict = "DID NOT COMPILE";
@@ -133,11 +156,11 @@ function run() {
     else verdict = `KILLED BY THE WRONG CASE (${r.failed.join(",")})`;
 
     rows.push({ ...m, verdict, died: r.failed });
-    console.log(`  ${m.id}  expect ${m.expect.padEnd(3)} → died: ${(r.failed.join(",") || "none").padEnd(12)} ${verdict}`);
+    console.log(`  ${m.id.padEnd(4)} expect ${m.expect.padEnd(3)} → died: ${(r.failed.join(",") || "none").padEnd(12)} ${verdict}`);
   }
 
   run(); // leave the tree compiled from the original
-  const bad = rows.filter((r) => r.verdict === "SURVIVED" || r.verdict.startsWith("KILLED BY THE WRONG") || r.verdict === "ANCHOR NOT FOUND");
+  const bad = rows.filter((r) => r.verdict === "SURVIVED" || r.verdict.startsWith("KILLED BY THE WRONG") || r.verdict === "ANCHOR NOT FOUND" || r.verdict === "DID NOT COMPILE");
   console.log(`\n${rows.length - bad.length}/${rows.length} mutants killed by their named case`);
   if (bad.length) {
     console.log("\nnot covered:");

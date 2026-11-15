@@ -30,17 +30,22 @@ assets/erc-kya/
     KYABridge8004.sol               curated ERC-8004 validator mirroring KYA levels to 0–100 (lossy snapshot; reverts on unmapped levels)
     verifiers/Groth16KYAVerifierAdapter.sol   snarkjs-style Groth16 → IKYAVerifier (kya-public-v1, 15 signals incl. schemeId + admissionDomain, epoch window enforced on-chain)
     companions/ValidationRegistry8004.sol     spec-conforming ERC-8004 Validation Registry (canonical one not yet deployed)
+    adapters/ValidationNetwork8294Adapter.sol ERC-8294 validation network → KYA assertion via the ATTESTED path (composition adapter; not shipped in the ERC assets)
     mocks/Mocks.sol                 test-only identity registry and verifiers
+    mocks/MockValidationNetwork8294.sol       test-only ERC-8294 network surface
   schemas/                          kya-scheme / kya-policy / kya-discovery JSON Schemas
   vectors/                          vectors.json + example descriptors
 tools/compile.js                    solc-js build → build/artifacts.json
 tools/vectors.js                    regenerates vectors.json
 tools/prepare-pr.sh                 lays the files out as an ethereum/ERCs PR
+tools/mutate-composition.js         mutation harness for the ERC-8294 composition vectors (each guard deleted in turn; its named case must be the one that fails)
 test/kya.test.js                    in-process EVM end-to-end suite (18 cases + 8 regression cases from the review thread (R1–R8), no RPC needed)
+test/composition-8294.test.js       ERC-8294 → KYA composition vectors (10 cases, mutation-checked 12/12)
 test/zk.test.js                     real Groth16 proof → Verifier.sol → adapter → KYARegistry, incl. adversarial + admission-domain cases (17 cases)
 companions/zk-kya-groth16/          EXPERIMENTAL reference ZK-KYA circuit (circom) + prover tooling + built keys
 scripts/deploy-sepolia.js           deploys the stack to Sepolia against the official ERC-8004 IdentityRegistry
 scripts/examples-sepolia.js         six worked examples on Sepolia (agent, schemes, attested, ZK, policy, bridge)
+docs/scheme-authoring-notes.md      guidance for scheme authors: evidence bounds the conclusion, provenance-committed vs consumption-bound, external-score ladders, claimDigest
 ```
 
 ## Build & test
@@ -48,7 +53,9 @@ scripts/examples-sepolia.js         six worked examples on Sepolia (agent, schem
 ```bash
 npm install
 node tools/compile.js        # solc 0.8.28, optimizer on, cancun
-node test/kya.test.js        # 24 end-to-end tests on an in-process EVM
+node test/kya.test.js        # 26 end-to-end tests on an in-process EVM
+node test/composition-8294.test.js   # ERC-8294 → KYA composition vectors
+node tools/mutate-composition.js     # mutation check of the composition vectors
 node tools/vectors.js        # regenerate assets/erc-kya/vectors/vectors.json
 npm run test:zk              # ZK companion end-to-end with a real Groth16 proof (uses the shipped test zkey)
 ```
@@ -109,11 +116,16 @@ Ownership: the revision-6 bridge owner is a session-held throwaway key; the cont
 - **ERC-8004 Trustless Agents** — primary subject type and mirror target. No changes to 8004 contracts required.
 - **ERC-8143 Smart Credential Resolution** — a single-function credential fetch interface that mentions KYA and ZKPs; this ERC provides the scheme/level/admission/revocation semantics it lacks and can expose an 8143-style view (`getCredential("kya:"+schemeId)`).
 - **EAS and similar attestation services** — can serve as a storage layer beneath a KYA Registry; this ERC defines the agent-KYA semantic layer, not another generic attestation primitive.
+- **ERC-8294 Validation Network for ERC-8004** — composes through the ordinary ATTESTED path: an adapter reads a completed network run and calls `attest()`, so the adapter is the recorded issuer; an operational failure (pending, failed, below quorum) is refused rather than recorded as level 0; the response → level ladder is the scheme's, checked against `resultDomain`. Reference adapter under `contracts/adapters/`, vectors in `test/composition-8294.test.js`.
 - **Token-bound skill / task standards (ERC-8338, ERC-8414)** — informative use cases: skill sellers and task fulfillers present KYA assertions; task descriptors reference a `policyId`.
 
 ## Filing as an ethereum/ERCs PR
 
 `tools/prepare-pr.sh <path-to-ERCs-fork> <number>` copies `ERCS/erc-kya.md` to `ERCS/erc-<number>.md`, `assets/erc-kya/` to `assets/erc-<number>/`, (the sources already carry the assigned number 8419; the script is kept for renumbering if ever needed). Work on a fresh branch (`add-erc-kya`) cut from the latest `upstream/master`; never commit to `master`.
+
+## Contributors
+
+- ERC-8294 → KYA composition adapter, its test vectors and the mutation harness: TMerlini (GitHub `Echo-Merlini`), co-author of ERC-8294, via kya-standard pull request #1; reworked on merge to bind the adapter to one scheme and take the response ladder from the scheme's committed result domain.
 
 ## License
 

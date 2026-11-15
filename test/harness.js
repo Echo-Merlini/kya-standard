@@ -44,7 +44,16 @@ class Harness {
     const ctor = iface.deploy ? iface.encodeDeploy(args) : "0x";
     const data = hexToBytes(a.bytecode + ctor.slice(2));
     const res = await this.vm.evm.runCall({ caller: this.accounts[from], data, gasLimit: 20_000_000n, block: this.block() });
-    if (res.execResult.exceptionError) throw new Error(`deploy ${name} failed: ${res.execResult.exceptionError.error}`);
+    if (res.execResult.exceptionError) {
+      // name the custom error when the constructor reverted with one, so a test can assert on it
+      let reason = res.execResult.exceptionError.error;
+      try {
+        const data = "0x" + Buffer.from(res.execResult.returnValue || []).toString("hex");
+        const parsed = data.length >= 10 ? iface.parseError(data) : null;
+        if (parsed) reason = `${parsed.name}(${parsed.args.map(String).join(",")})`;
+      } catch (_) {}
+      throw new Error(`deploy ${name} failed: ${reason}`);
+    }
     return new Contract(this, res.createdAddress, iface, name);
   }
 }

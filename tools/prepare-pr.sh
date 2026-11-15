@@ -18,8 +18,9 @@ sed -e "s/^eip: 8419/eip: $NUM/" \
 
 rm -rf "$DEST_ASSETS"
 cp -R "$HERE/assets/erc-kya" "$DEST_ASSETS"
-# assets must not carry test-only mocks in the PR
-rm -rf "$DEST_ASSETS/contracts/mocks"
+# assets must not carry test-only mocks or third-party composition adapters in the PR:
+# the ERC assets stay self-contained; adapters live in this repository only
+rm -rf "$DEST_ASSETS/contracts/mocks" "$DEST_ASSETS/contracts/adapters"
 find "$DEST_ASSETS" -type f \( -name '*.json' -o -name '*.sol' -o -name '*.md' \) -exec sed -i -e "s#eip-8419#eip-$NUM#g" -e "s#erc-8419#erc-$NUM#g" {} +
 
 echo "wrote $DEST_MD"

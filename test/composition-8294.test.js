@@ -1,4 +1,4 @@
-// ERC-8294 → ERC-KYA composition vectors.
+// ERC-8294 → ERC-KYA composition vectors (companion; not part of the ERC assets).
 //
 // ERC-8294 ("Validation Network for ERC-8004", ethereum/ERCs#1808) extends ERC-8004's
 // Validation Registry so a `validatorAddress` may be a NETWORK of independent validators,
@@ -10,7 +10,7 @@
 // the recorded issuer. No new admission mode, and the KYA normative core stays
 // network-agnostic.
 //
-// Four cases:
+// Cases:
 //
 //   C1  a completed network run maps to an assertion, and the assertion's issuer is the
 //       ADAPTER — not a validator, and not the network
@@ -22,7 +22,11 @@
 //       from C3
 //   C5  rejected: the result was written by a validator address other than the pinned network
 //   C6  rejected: a subject naming another registry, chain, or subject type
-//   C7  the response→level mapping is exact at every boundary
+//   C7  the response→level mapping is exact at every boundary of the SCHEME's ladder
+//   C8  the quorum floor is exact at count == required
+//   C9  the ladder is the scheme's: an adapter cannot be constructed with a ladder that does
+//       not match the scheme's committed result domain, nor for a non-ordered scheme, and
+//       the scheme it issues under is fixed at construction
 //   R   the adapter refuses once the network moves its verification profile
 //
 // Every case is mutation-checked by tools/mutate-composition.js: each guard is deleted in turn
@@ -48,11 +52,21 @@ const ERC8004 = ethers.keccak256(ethers.toUtf8Bytes("erc8004"));
 // ERC-8294 request states, from IValidationNetwork.status().
 const PENDING = 1, RESPONDED = 2, FAILED = 3;
 
+// The scheme's ladder, as its descriptor would declare it: levels 0..3, where
+// `levels[n].erc8004Response` is the minimum response that earns level n.
+const LADDER = [50, 70, 90];
+const MASK_0_3 = 0b1111n;
+
 function subject8004(chainId, identityRegistry, agentId) {
   return {
     subjectType: ERC8004,
     subjectData: coder.encode(["uint256", "address", "uint256"], [chainId, identityRegistry, agentId]),
   };
+}
+
+// SchemeInput as introduced in revision 5: the result domain is committed at registration.
+function SI(uri, hash, mode, binding, verifier, predecessor, resultKind, levelMask) {
+  return { schemeURI: uri, schemeHash: hash, mode, binding, resultKind, levelMask, verifier, predecessor };
 }
 
 let passed = 0;
@@ -67,7 +81,7 @@ async function test(name, fn) {
 
   const CHAIN_ID = 1n;                       // the harness VM reports mainnet
   const PROFILE = ethers.id("mock-8294-profile-v1");
-  const REQUIRED_VALIDATORS = 5;             // the selection policy's floor (N / minOperators)
+  const REQUIRED_VALIDATORS = 5;             // the selection policy's floor (N)
 
   const schemes = await h.deploy("KYASchemeRegistry");
   const kya = await h.deploy("KYARegistry", [schemes.addr]);
@@ -75,27 +89,27 @@ async function test(name, fn) {
   const validation = await h.deploy("ValidationRegistry8004", [identity.addr]);
   const network = await h.deploy("MockValidationNetwork8294", [PROFILE]);
 
-  const adapter = await h.deploy("ValidationNetwork8294Adapter", [
-    kya.addr, validation.addr, network.addr, CHAIN_ID, identity.addr, REQUIRED_VALIDATORS, PROFILE,
-  ]);
-
-  // An ATTESTED, IDENTITY-bound scheme whose descriptor declares `erc8004-validation` as an
-  // admissible evidence kind. IDENTITY binding keeps these vectors about the composition
-  // rather than about controller transfer, which kya.test.js already covers (R2).
+  // An ATTESTED, IDENTITY-bound, ORDERED_LEVEL scheme declaring levels 0..3, whose descriptor
+  // declares `erc8004-validation` as an admissible evidence kind. IDENTITY binding keeps these
+  // vectors about the composition rather than about controller transfer, which kya.test.js
+  // already covers (R2).
   const schemeHash = ethers.id("scheme://agent-accountability-via-8294");
   const reg = await schemes.send("registerScheme", [
-    "ipfs://scheme-8294", schemeHash, 0 /* ATTESTED */, 0 /* IDENTITY */, ethers.ZeroAddress, ethers.ZeroHash,
+    SI("ipfs://scheme-8294", schemeHash, 0 /* ATTESTED */, 0 /* IDENTITY */, ethers.ZeroAddress, ethers.ZeroHash, 0 /* ORDERED_LEVEL */, MASK_0_3),
   ]);
   const schemeId = reg.logs.find((l) => l.name === "SchemeRegistered").args.schemeId;
+
+  const adapterArgs = (sid, ladder) => [
+    kya.addr, validation.addr, network.addr, CHAIN_ID, identity.addr, REQUIRED_VALIDATORS, PROFILE, sid, ladder,
+  ];
+  const adapter = await h.deploy("ValidationNetwork8294Adapter", adapterArgs(schemeId, LADDER));
 
   // Two agents, so the subject-mismatch case has somewhere to point. `register` mints to the
   // caller and returns the id, matching the ERC-8004 identity registry's own shape.
   const AGENT = (await identity.send("register", ["ipfs://agent-a.json"], "agentOwner")).result;
   const OTHER_AGENT = (await identity.send("register", ["ipfs://agent-b.json"], "stranger")).result;
   // C3 needs a subject with NO prior assertion, so that "nothing was recorded" is a claim about
-  // a clean slate rather than about whatever an earlier case left behind. Sharing AGENT with C1
-  // made that assertion meaningless — the kind of contamination that turns a real control into
-  // a test of case ordering.
+  // a clean slate rather than about whatever an earlier case left behind.
   const FRESH_AGENT = (await identity.send("register", ["ipfs://agent-c.json"], "agentOwner")).result;
 
   const subj = subject8004(CHAIN_ID, identity.addr, AGENT);
@@ -123,7 +137,7 @@ async function test(name, fn) {
     await runCompleted(requestHash, AGENT, 95, 7);
 
     const { logs } = await adapter.send(
-      "issueFromValidation", [subj, schemeId, requestHash, expires, "ipfs://evidence-c1"], "relayer"
+      "issueFromValidation", [subj, requestHash, expires, "ipfs://evidence-c1"], "relayer"
     );
     const issued = logs.find((l) => l.name === "AssertionIssuedFromNetwork");
     assert.ok(issued, "expected AssertionIssuedFromNetwork");
@@ -136,6 +150,7 @@ async function test(name, fn) {
     assert.equal(ethers.getAddress(a.issuer), adapter.addr);
     assert.notEqual(ethers.getAddress(a.issuer), A("relayer"), "the relayer must not become the issuer");
     assert.equal(Number(a.level), 3);
+    assert.equal(a.schemeId, schemeId, "issued under the scheme the adapter is bound to");
   });
 
   // --- C2 ------------------------------------------------------------------
@@ -145,7 +160,7 @@ async function test(name, fn) {
 
     await expectRevert(
       // …but the caller asserts about AGENT.
-      adapter.send("issueFromValidation", [subj, schemeId, requestHash, expires, "ipfs://e"], "relayer"),
+      adapter.send("issueFromValidation", [subj, requestHash, expires, "ipfs://e"], "relayer"),
       "SubjectMismatch"
     );
   });
@@ -159,7 +174,7 @@ async function test(name, fn) {
     // (a) still pending — nothing has been established about this agent.
     await network.send("setStatus", [PENDING, 7, false]);
     const e1 = await expectRevert(
-      adapter.send("issueFromValidation", [fresh, schemeId, requestHash, expires, "ipfs://e"], "relayer"),
+      adapter.send("issueFromValidation", [fresh, requestHash, expires, "ipfs://e"], "relayer"),
       "ResultNotEstablished"
     );
     assert.ok(String(e1.reason).includes(String(PENDING)), "the revert should name the request state");
@@ -167,7 +182,7 @@ async function test(name, fn) {
     // (b) the run failed — a timeout, no usable aggregate. Still nothing established.
     await network.send("setStatus", [FAILED, 7, false]);
     await expectRevert(
-      adapter.send("issueFromValidation", [fresh, schemeId, requestHash, expires, "ipfs://e"], "relayer"),
+      adapter.send("issueFromValidation", [fresh, requestHash, expires, "ipfs://e"], "relayer"),
       "ResultNotEstablished"
     );
 
@@ -175,7 +190,7 @@ async function test(name, fn) {
     //     reached *an* aggregate, but not one the policy admits — so again, no conclusion.
     await network.send("setStatus", [RESPONDED, REQUIRED_VALIDATORS - 1, true]);
     await expectRevert(
-      adapter.send("issueFromValidation", [fresh, schemeId, requestHash, expires, "ipfs://e"], "relayer"),
+      adapter.send("issueFromValidation", [fresh, requestHash, expires, "ipfs://e"], "relayer"),
       "QuorumNotMet"
     );
 
@@ -193,7 +208,7 @@ async function test(name, fn) {
     const responseHash = await runCompleted(requestHash, AGENT, 10, 6);   // completed; verdict is poor
 
     const { logs } = await adapter.send(
-      "issueFromValidation", [subj, schemeId, requestHash, expires, "ipfs://evidence-c4"], "relayer"
+      "issueFromValidation", [subj, requestHash, expires, "ipfs://evidence-c4"], "relayer"
     );
     const issued = logs.find((l) => l.name === "AssertionIssuedFromNetwork");
     const a = await kya.call("getAssertion", [issued.args.assertionId]);
@@ -212,6 +227,8 @@ async function test(name, fn) {
       )
     );
     assert.equal(a.evidenceHash, expectedEvidence, "evidenceHash must commit to the source result");
+    // claimDigest commits to the (public) run values, as the adapter documents.
+    assert.equal(a.claimDigest, ethers.keccak256(coder.encode(["bytes32", "bytes32", "uint8"], [requestHash, responseHash, 10])));
   });
 
   // --- R: the network cannot move its semantics under a pinned adapter -----
@@ -221,14 +238,11 @@ async function test(name, fn) {
     await network.send("setProfile", [ethers.id("mock-8294-profile-v2")]);
     try {
       await expectRevert(
-        adapter.send("issueFromValidation", [subj, schemeId, requestHash, expires, "ipfs://e"], "relayer"),
+        adapter.send("issueFromValidation", [subj, requestHash, expires, "ipfs://e"], "relayer"),
         "ProfileChanged"
       );
     } finally {
-      // Restore UNCONDITIONALLY. A bare restore after expectRevert is skipped when this case
-      // fails, which leaks the mutated profile into every later case and makes a mutation matrix
-      // unreadable: deleting the profile pin appeared to break C8 as well as this case. A case
-      // that corrupts its successors on failure is reporting someone else's problem as its own.
+      // Restore UNCONDITIONALLY, so a failure here cannot leak the mutated profile into later cases.
       await network.send("setProfile", [PROFILE]);
     }
   });
@@ -249,7 +263,7 @@ async function test(name, fn) {
       "issuerA"
     );
     await expectRevert(
-      adapter.send("issueFromValidation", [rogue, schemeId, requestHash, expires, "ipfs://e"], "relayer"),
+      adapter.send("issueFromValidation", [rogue, requestHash, expires, "ipfs://e"], "relayer"),
       "NotExpectedNetwork"
     );
   });
@@ -264,13 +278,13 @@ async function test(name, fn) {
 
     const otherRegistry = subject8004(CHAIN_ID, A("stranger"), AGENT);
     await expectRevert(
-      adapter.send("issueFromValidation", [otherRegistry, schemeId, requestHash, expires, "ipfs://e"], "relayer"),
+      adapter.send("issueFromValidation", [otherRegistry, requestHash, expires, "ipfs://e"], "relayer"),
       "UnsupportedSubject"
     );
 
     const otherChain = subject8004(CHAIN_ID + 1n, identity.addr, AGENT);
     await expectRevert(
-      adapter.send("issueFromValidation", [otherChain, schemeId, requestHash, expires, "ipfs://e"], "relayer"),
+      adapter.send("issueFromValidation", [otherChain, requestHash, expires, "ipfs://e"], "relayer"),
       "UnsupportedSubject"
     );
 
@@ -279,26 +293,27 @@ async function test(name, fn) {
       subjectData: coder.encode(["uint256", "address", "uint256"], [CHAIN_ID, identity.addr, AGENT]),
     };
     await expectRevert(
-      adapter.send("issueFromValidation", [wrongType, schemeId, requestHash, expires, "ipfs://e"], "relayer"),
+      adapter.send("issueFromValidation", [wrongType, requestHash, expires, "ipfs://e"], "relayer"),
       "UnsupportedSubject"
     );
   });
 
   // --- C7 ------------------------------------------------------------------
-  // The response→level mapping is the one place a conclusion's STRENGTH is decided, so its
-  // boundaries are pinned rather than spot-checked. Each call supersedes the last for the same
-  // (subject, scheme, issuer) triple; the emitted level is what is being asserted.
-  await test("C7 the response→level mapping is exact at every boundary (89/90, 69/70, 49/50)", async () => {
+  // The response→level mapping is the one place a conclusion's STRENGTH is decided. It is the
+  // scheme's ladder (LADDER above), so its boundaries are pinned rather than spot-checked.
+  // Each call supersedes the last for the same (subject, scheme, issuer) triple; the emitted
+  // level is what is being asserted.
+  await test("C7 the response→level mapping is exact at every boundary of the scheme's ladder (89/90, 69/70, 49/50)", async () => {
+    assert.deepEqual((await adapter.call("thresholds", [])).map(Number), LADDER, "the adapter carries the scheme's ladder");
     const boundary = subject8004(CHAIN_ID, identity.addr, AGENT);
     for (const [response, expected] of [[100, 3], [90, 3], [89, 2], [70, 2], [69, 1], [50, 1], [49, 0], [0, 0]]) {
       const requestHash = ethers.id(`req-c7-${response}`);
       await runCompleted(requestHash, AGENT, response, 7);
       const { logs } = await adapter.send(
-        "issueFromValidation", [boundary, schemeId, requestHash, expires, "ipfs://e"], "relayer"
+        "issueFromValidation", [boundary, requestHash, expires, "ipfs://e"], "relayer"
       );
       // Read the REGISTRY, not the adapter's own event: a case that believes the report of the
-      // thing under test is self-grading, which is the failure the KYA runner review turned up
-      // upstream. The event is checked too, and the two must agree.
+      // thing under test is self-grading. The event is checked too, and the two must agree.
       const id = logs.find((l) => l.name === "AssertionIssuedFromNetwork").args.assertionId;
       const stored = Number((await kya.call("getAssertion", [id])).level);
       const reported = Number(logs.find((l) => l.name === "AssertionIssuedFromNetwork").args.level);
@@ -313,22 +328,20 @@ async function test(name, fn) {
   //
   // This case also pins what the adapter does NOT establish: `status()` exposes only
   // `validatorCount`, so ERC-8294's `minOperators` (distinct operators, D) is not observable
-  // and not enforced. The recorded assertion therefore carries NO operator-diversity claim —
-  // asserted here so the boundary is witnessed rather than only described in a comment.
+  // and not enforced. The recorded assertion therefore carries NO operator-diversity claim.
   await test("C8 quorum floor is exact at count == required, and no operator-diversity claim is recorded", async () => {
     const at = subject8004(CHAIN_ID, identity.addr, OTHER_AGENT);
     const requestHash = ethers.id("req-c8");
     const responseHash = await runCompleted(requestHash, OTHER_AGENT, 95, REQUIRED_VALIDATORS, "stranger");
 
     const { logs } = await adapter.send(
-      "issueFromValidation", [at, schemeId, requestHash, expires, "ipfs://e"], "relayer"
+      "issueFromValidation", [at, requestHash, expires, "ipfs://e"], "relayer"
     );
     const id = logs.find((l) => l.name === "AssertionIssuedFromNetwork").args.assertionId;
     const a = await kya.call("getAssertion", [id]);
     assert.ok(Number(a.issuedAt) > 0, "count == required must be admitted, not rejected");
 
-    // The evidence preimage names the validator COUNT and nothing about operators. Re-derived
-    // here, so a reader can see exactly which facts the conclusion rests on.
+    // The evidence preimage names the validator COUNT and nothing about operators.
     const expected = ethers.keccak256(
       coder.encode(
         ["string", "address", "bytes32", "bytes32", "bytes32", "uint16", "uint8"],
@@ -336,6 +349,40 @@ async function test(name, fn) {
       )
     );
     assert.equal(a.evidenceHash, expected, "evidence commits the count, and carries no operator claim");
+  });
+
+  // --- C9 ------------------------------------------------------------------
+  // The ladder belongs to the scheme. The adapter checks the ladder it is given against the
+  // scheme's committed result domain at construction, so a deployer cannot (a) hand a 3-step
+  // ladder to a scheme that declares 5 levels, (b) hand a ladder that is not strictly
+  // increasing or exceeds the 0–100 scale, or (c) bind the adapter to a categorical scheme at
+  // all. And the scheme is fixed: `issueFromValidation` takes no schemeId, so a caller cannot
+  // route a network result under a scheme whose levels mean something else.
+  await test("C9 the ladder is the scheme's: ladder/mask mismatch, malformed ladders and non-ordered schemes are refused at construction; the scheme is pinned", async () => {
+    const deployFails = async (args, err) => {
+      try { await h.deploy("ValidationNetwork8294Adapter", args); }
+      catch (e) { assert.ok(String(e.message).includes(err), `expected ${err}, got: ${e.message}`); return; }
+      assert.fail(`construction should have reverted with ${err}`);
+    };
+    // (a) scheme declares levels 0..4 (mask 0b11111); a 3-step ladder covers only 0..3
+    const { result: s04 } = await schemes.send("registerScheme", [
+      SI("ipfs://s04", ethers.id("s04"), 0, 0, ethers.ZeroAddress, ethers.ZeroHash, 0, 0b11111n),
+    ]);
+    await deployFails(adapterArgs(s04, LADDER), "LadderMismatch");
+    // ...and a 4-step ladder for it is accepted
+    await h.deploy("ValidationNetwork8294Adapter", adapterArgs(s04, [25, 50, 75, 95]));
+    // (b) malformed ladders for the 0..3 scheme
+    await deployFails(adapterArgs(schemeId, [50, 50, 90]), "LadderMismatch");   // not strictly increasing
+    await deployFails(adapterArgs(schemeId, [50, 70, 101]), "LadderMismatch");  // beyond the ERC-8004 scale
+    await deployFails(adapterArgs(schemeId, []), "LadderMismatch");             // empty
+    await deployFails(adapterArgs(schemeId, [50, 70]), "LadderMismatch");       // too short for 0..3
+    // (c) a categorical scheme has no ladder to map onto
+    const { result: cat } = await schemes.send("registerScheme", [
+      SI("ipfs://cat", ethers.id("cat"), 0, 0, ethers.ZeroAddress, ethers.ZeroHash, 1 /* CATEGORICAL */, 0b1110n),
+    ]);
+    await deployFails(adapterArgs(cat, [50, 70, 90]), "SchemeNotOrdered");
+    // the pinned scheme is observable, and is the one every assertion above was issued under
+    assert.equal(await adapter.call("schemeId", []), schemeId);
   });
 
   console.log(`\n${passed} passed\n`);
