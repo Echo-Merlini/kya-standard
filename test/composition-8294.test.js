@@ -27,6 +27,10 @@
 //   C9  the ladder is the scheme's: an adapter cannot be constructed with a ladder that does
 //       not match the scheme's committed result domain, nor for a non-ordered scheme, and
 //       the scheme it issues under is fixed at construction
+//   C10 the adapter's ladder refusal and the registry's KYA_LevelNotDeclared refusal are the SAME
+//       rule on the SAME committed mask, not two independently-plausible checks: one gap scheme
+//       that the registry refuses an attestation under (per-bit) and that the adapter refuses to
+//       bind to (contiguous 0..n), both keyed off `resultDomain`'s one committed value
 //   R   the adapter refuses once the network moves its verification profile
 //
 // Every case is mutation-checked by tools/mutate-composition.js: each guard is deleted in turn
@@ -383,6 +387,63 @@ async function test(name, fn) {
     await deployFails(adapterArgs(cat, [50, 70, 90]), "SchemeNotOrdered");
     // the pinned scheme is observable, and is the one every assertion above was issued under
     assert.equal(await adapter.call("schemeId", []), schemeId);
+  });
+
+  // --- C10 -----------------------------------------------------------------
+  // C9 shows the adapter refuses a malformed ladder. C10 shows that refusal is the SAME rule the
+  // KYA registry enforces when it records an assertion — both read the scheme's level set from one
+  // committed value, `resultDomain(schemeId).levelMask`, so they cannot drift apart into one layer
+  // admitting a level the other denies. It is exhibited on a scheme the two layers treat differently
+  // on the surface: the Scheme Registry admits a NON-CONTIGUOUS ordered mask (it requires only that
+  // level 0 and one positive level are declared), so 0b1011 — levels {0,1,3}, with level 2 a gap —
+  // registers. The registry's per-bit `_requireDeclared` then refuses an attestation at the gap
+  // level, and the adapter, whose ladder model is contiguous 0..n, refuses to bind to the scheme at
+  // all. Same scheme, same committed mask, same undeclared level.
+  await test("C10 the adapter's ladder refusal and the registry's KYA_LevelNotDeclared refusal agree on one committed domain", async () => {
+    const GAP_MASK = 0b1011n;   // ordered levels {0,1,3}; level 2 is undeclared
+    const { result: gap } = await schemes.send("registerScheme", [
+      SI("ipfs://gap", ethers.id("gap"), 0 /* ATTESTED */, 0 /* IDENTITY */, ethers.ZeroAddress, ethers.ZeroHash, 0 /* ORDERED_LEVEL */, GAP_MASK),
+    ]);
+
+    // The one committed value both layers read their level set from.
+    const [kind, mask] = await kya.call("resultDomain", [gap]);
+    assert.equal(Number(kind), 0, "ordered");
+    assert.equal(BigInt(mask), GAP_MASK);
+    assert.equal((GAP_MASK >> 2n) & 1n, 0n, "level 2 is the undeclared gap");
+    assert.equal((GAP_MASK >> 3n) & 1n, 1n, "level 3 is declared");
+
+    // (1) Registry side — a true per-bit read of that mask: the gap level 2 is refused, the declared
+    //     level 3 is not. `d` is any digest; the registry does not constrain claim/evidence here.
+    const d = ethers.id("c10");
+    const e2 = await expectRevert(
+      kya.send("attest", [subj, gap, 2, d, expires, "ipfs://e", d], "relayer"),
+      "KYA_LevelNotDeclared"
+    );
+    assert.ok(String(e2.reason).includes(",2)"), "the refusal names the undeclared level");
+    await kya.send("attest", [subj, gap, 3, d, expires, "ipfs://e", d], "relayer");  // declared → admitted
+
+    // (2) Adapter side — the adapter cannot be constructed for this scheme under ANY ladder, because
+    //     0b1011 is not the contiguous 0..n its ladder model requires. The refusal NAMES the same mask
+    //     the registry just enforced, so the two checks are bound to one value rather than two copies.
+    let ctorReason = "";
+    try { await h.deploy("ValidationNetwork8294Adapter", adapterArgs(gap, LADDER)); }
+    catch (e) { ctorReason = String(e.message); }
+    assert.ok(ctorReason.includes("LadderMismatch"), `expected LadderMismatch, got: ${ctorReason}`);
+    assert.ok(ctorReason.includes(`,${GAP_MASK},`), "the constructor refusal must name the scheme's committed mask");
+
+    // (3) The positive direction, on the well-formed bound scheme: the levels the adapter can emit are
+    //     exactly 0..thresholds.length, every one of them is declared by that scheme's mask, and the
+    //     first level ABOVE the top is precisely what the registry refuses. Agreement holds both ways
+    //     off the one committed domain.
+    const n = (await adapter.call("thresholds", [])).length;
+    const [, boundMask] = await kya.call("resultDomain", [schemeId]);
+    for (let L = 0n; L <= BigInt(n); L++) {
+      assert.equal((BigInt(boundMask) >> L) & 1n, 1n, `the adapter can emit level ${L}, so the scheme must declare it`);
+    }
+    await expectRevert(
+      kya.send("attest", [subj, schemeId, Number(n) + 1, d, expires, "ipfs://e", d], "relayer"),
+      "KYA_LevelNotDeclared"
+    );
   });
 
   console.log(`\n${passed} passed\n`);

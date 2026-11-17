@@ -8,14 +8,22 @@
 // that dies is the one that claims to cover it. A mutant that kills everything is as
 // uninformative as one that kills nothing.
 //
+// Most mutants break an adapter guard. One (M13) breaks the KYA registry's level-declared guard,
+// because the composition's correctness genuinely leans on it: C10 asserts the adapter's ladder
+// refusal and that registry refusal are the same rule, so the registry guard is in scope for the
+// composition's mutation check too. Each mutant therefore names the FILE it edits (default: the
+// adapter).
+//
 // Run: node tools/mutate-composition.js
 const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
-const ADAPTER = path.join(ROOT, "assets/erc-kya/contracts/adapters/ValidationNetwork8294Adapter.sol");
-const ORIGINAL = fs.readFileSync(ADAPTER, "utf8");
+const CONTRACTS = path.join(ROOT, "assets/erc-kya/contracts");
+const ADAPTER = path.join(CONTRACTS, "adapters/ValidationNetwork8294Adapter.sol");
+const REGISTRY = path.join(CONTRACTS, "KYARegistry.sol");
+const ORIGINAL = Object.fromEntries([ADAPTER, REGISTRY].map((f) => [f, fs.readFileSync(f, "utf8")]));
 
 const MUTANTS = [
   {
@@ -110,6 +118,14 @@ const MUTANTS = [
     from: `            if (thresholds_[i] > 100 || (i > 0 && thresholds_[i] <= thresholds_[i - 1])) {`,
     to: `            if (false) { // MUTANT M12`,
   },
+  {
+    id: "M13",
+    file: REGISTRY,
+    what: "registry level-declared guard deleted (an undeclared level is recorded, so the registry no longer agrees with the adapter's contiguity refusal)",
+    expect: "C10",
+    from: `        if ((levelMask >> level) & 1 == 0) revert KYA_LevelNotDeclared(schemeId, level);`,
+    to: `        // MUTANT M13: level-declared guard deleted`,
+  },
 ];
 
 function run() {
@@ -140,14 +156,16 @@ function run() {
 
   const rows = [];
   for (const m of MUTANTS) {
-    if (!ORIGINAL.includes(m.from)) {
+    const target = m.file || ADAPTER;
+    const src = ORIGINAL[target];
+    if (!src.includes(m.from)) {
       rows.push({ ...m, verdict: "ANCHOR NOT FOUND", died: [] });
       console.log(`  ${m.id}  ANCHOR NOT FOUND — mutant not applied`);
       continue;
     }
-    fs.writeFileSync(ADAPTER, ORIGINAL.replace(m.from, m.to));
+    fs.writeFileSync(target, src.replace(m.from, m.to));
     let r;
-    try { r = run(); } finally { fs.writeFileSync(ADAPTER, ORIGINAL); }
+    try { r = run(); } finally { fs.writeFileSync(target, src); }
 
     let verdict;
     if (!r.compiled) verdict = "DID NOT COMPILE";

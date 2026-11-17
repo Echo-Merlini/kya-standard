@@ -38,9 +38,9 @@ assets/erc-kya/
 tools/compile.js                    solc-js build → build/artifacts.json
 tools/vectors.js                    regenerates vectors.json
 tools/prepare-pr.sh                 lays the files out as an ethereum/ERCs PR
-tools/mutate-composition.js         mutation harness for the ERC-8294 composition vectors (each guard deleted in turn; its named case must be the one that fails)
+tools/mutate-composition.js         mutation harness for the ERC-8294 composition vectors (each guard deleted in turn; its named case must be the one that fails; one mutant covers the KYA registry's level-declared guard the composition leans on)
 test/kya.test.js                    in-process EVM end-to-end suite (18 cases + 8 regression cases from the review thread (R1–R8), no RPC needed)
-test/composition-8294.test.js       ERC-8294 → KYA composition vectors (10 cases, mutation-checked 12/12)
+test/composition-8294.test.js       ERC-8294 → KYA composition vectors (11 cases, mutation-checked 13/13)
 test/zk.test.js                     real Groth16 proof → Verifier.sol → adapter → KYARegistry, incl. adversarial + admission-domain cases (17 cases)
 companions/zk-kya-groth16/          EXPERIMENTAL reference ZK-KYA circuit (circom) + prover tooling + built keys
 scripts/deploy-sepolia.js           deploys the stack to Sepolia against the official ERC-8004 IdentityRegistry
